@@ -7,8 +7,18 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <regex>
+#include <vector>
 
 namespace SimpleWeb {
+
+  template <typename T>
+  std::vector<std::basic_string<T>> split(const std::basic_string<T>&_input, const std::basic_string<T> &_regex) {
+    std::basic_regex<T> re(_regex);
+    std::sregex_token_iterator first{_input.begin(), _input.end(), re, -1}, last;
+    return {first, last};
+  }
+
   inline bool case_insensitive_equal(const std::string &str1, const std::string &str2) noexcept {
     return str1.size() == str2.size() &&
            std::equal(str1.begin(), str1.end(), str2.begin(), [](char a, char b) {

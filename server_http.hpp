@@ -44,11 +44,25 @@ namespace SimpleWeb {
 #endif
 
 namespace SimpleWeb {
+    using namespace std::string_literals;
   template <class socket_type>
   class Server;
 
   template <class socket_type>
   class ServerBase {
+
+  private:
+      class regex_orderable : public regex::regex {
+          std::string str;
+
+      public:
+          regex_orderable(const char *regex_cstr) : regex::regex(regex_cstr), str(regex_cstr) {}
+          regex_orderable(std::string regex_str) : regex::regex(regex_str), str(std::move(regex_str)) {}
+          bool operator<(const regex_orderable &rhs) const noexcept {
+            return str < rhs.str;
+          }
+      };
+
   protected:
     class Session;
 
@@ -204,6 +218,37 @@ namespace SimpleWeb {
       }
     };
 
+
+      using RequestPtr = typename std::shared_ptr<typename ServerBase<socket_type>::Request>;
+      using ResponsePtr = typename std::shared_ptr<typename ServerBase<socket_type>::Response>;
+      using RequestHandler = std::function<void(ResponsePtr, RequestPtr)>;
+      using ResourceMapping = typename std::map<std::string, RequestHandler>;
+
+      class Host {
+      public:
+          RequestHandler find_resource(const std::shared_ptr<Session> &session) {
+            // Find path- and method-match, and call write_response
+            for(const auto &regex_method : resource) {
+              auto it = regex_method.second.find(session->request->method);
+              if(it != regex_method.second.end()) {
+                regex::smatch sm_res;
+                if(regex::regex_match(session->request->path, sm_res, regex_method.first)) {
+                  session->request->path_match = std::move(sm_res);
+                  return it->second;
+                }
+              }
+            }
+            auto it = default_resource.find(session->request->method);
+            if(it != default_resource.end())
+              return it->second;
+            return proxy;
+          }
+
+          /// Warning: do not add or remove resources after start() is called
+          std::map<regex_orderable, ResourceMapping> resource;
+          ResourceMapping default_resource;
+          RequestHandler  proxy;
+      };
   protected:
     class Connection : public std::enable_shared_from_this<Connection> {
     public:
@@ -291,24 +336,7 @@ namespace SimpleWeb {
     /// Set before calling start().
     Config config;
 
-  private:
-    class regex_orderable : public regex::regex {
-      std::string str;
-
-    public:
-      regex_orderable(const char *regex_cstr) : regex::regex(regex_cstr), str(regex_cstr) {}
-      regex_orderable(std::string regex_str) : regex::regex(regex_str), str(std::move(regex_str)) {}
-      bool operator<(const regex_orderable &rhs) const noexcept {
-        return str < rhs.str;
-      }
-    };
-
   public:
-    /// Warning: do not add or remove resources after start() is called
-    std::map<regex_orderable, std::map<std::string, std::function<void(std::shared_ptr<typename ServerBase<socket_type>::Response>, std::shared_ptr<typename ServerBase<socket_type>::Request>)>>> resource;
-
-    std::map<std::string, std::function<void(std::shared_ptr<typename ServerBase<socket_type>::Response>, std::shared_ptr<typename ServerBase<socket_type>::Request>)>> default_resource;
-
     std::function<void(std::shared_ptr<typename ServerBase<socket_type>::Request>, const error_code &)> on_error;
 
     std::function<void(std::unique_ptr<socket_type> &, std::shared_ptr<typename ServerBase<socket_type>::Request>)> on_upgrade;
@@ -382,6 +410,24 @@ namespace SimpleWeb {
       stop();
     }
 
+      std::shared_ptr<Host> host(const std::string &_hostnames) {
+        auto host = std::make_shared<Host>();
+        auto hostnames = split(_hostnames, "\\s+"s);
+        for (const auto& name: hostnames) {
+            auto hostname = split(name, ":"s)[0];
+          size_t pos = hostname.find("*");
+            if (pos != std::string::npos) {
+              do {
+                hostname.replace(pos, 1, "([^.]+)");
+                pos = hostname.find("*");
+              } while (pos != std::string::npos);
+              wildcard_hosts[hostname] = host;
+            } else {
+              hosts[hostname] = host;
+            }
+        }
+        return host;
+      }
   protected:
     bool internal_io_service = false;
 
@@ -392,6 +438,9 @@ namespace SimpleWeb {
     std::shared_ptr<std::mutex> connections_mutex;
 
     std::shared_ptr<ScopeRunner> handler_runner;
+
+      std::map<std::string, std::shared_ptr<Host>> hosts;
+      std::map<std::string, std::shared_ptr<Host>> wildcard_hosts;
 
     ServerBase(unsigned short port) noexcept : config(port), connections(new std::unordered_set<Connection *>()), connections_mutex(new std::mutex()), handler_runner(new ScopeRunner()) {}
 
@@ -508,25 +557,43 @@ namespace SimpleWeb {
           return;
         }
       }
-      // Find path- and method-match, and call write_response
-      for(auto &regex_method : resource) {
-        auto it = regex_method.second.find(session->request->method);
-        if(it != regex_method.second.end()) {
-          regex::smatch sm_res;
-          if(regex::regex_match(session->request->path, sm_res, regex_method.first)) {
-            session->request->path_match = std::move(sm_res);
-            write_response(session, it->second);
-            return;
+
+      std::shared_ptr<Host> host;
+
+      auto it = session->request->header.find("Host");
+      auto req_hostname = split(it->second, ":"s)[0];
+      std::cout << "host: " << req_hostname<< std::endl;
+      if (it == session->request->header.end()) {
+        // TODO: get default host
+        return;
+      }
+
+      for (const auto& hostname: wildcard_hosts) {
+        std::smatch sm;
+        if (std::regex_match(req_hostname, sm, std::regex(hostname.first))) {
+          host = hostname.second;
+          break;
+        }
+      }
+
+      if (!host) {
+        for (const auto& hostname: hosts) {
+          if (req_hostname == hostname.first) {
+            host = hostname.second;
+            break;
           }
         }
       }
-      auto it = default_resource.find(session->request->method);
-      if(it != default_resource.end())
-        write_response(session, it->second);
+
+      if (host) {
+        auto handler = host->find_resource(session);
+        if (handler) {
+          write_response(session, handler);
+        }
+      }
     }
 
-    void write_response(const std::shared_ptr<Session> &session,
-                        std::function<void(std::shared_ptr<typename ServerBase<socket_type>::Response>, std::shared_ptr<typename ServerBase<socket_type>::Request>)> &resource_function) {
+    void write_response(const std::shared_ptr<Session> &session, RequestHandler &resource_function) {
       session->connection->set_timeout(config.timeout_content);
       auto response = std::shared_ptr<Response>(new Response(session, config.timeout_content), [this](Response *response_ptr) {
         auto response = std::shared_ptr<Response>(response_ptr);
