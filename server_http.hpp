@@ -415,11 +415,17 @@ namespace SimpleWeb {
         auto hostnames = split(_hostnames, "\\s+"s);
         for (const auto& name: hostnames) {
             auto hostname = split(name, ":"s)[0];
-          size_t pos = hostname.find("*");
+            size_t pos = hostname.rfind('*');
             if (pos != std::string::npos) {
+                size_t pos = hostname.rfind('.');
+                do {
+                    hostname.replace(pos, 1, "\\.");
+                    pos = hostname.rfind('.', pos);
+                } while (pos != std::string::npos);
+                pos = hostname.rfind('*');
               do {
                 hostname.replace(pos, 1, "([^.]+)");
-                pos = hostname.find("*");
+                pos = hostname.rfind('*', pos);
               } while (pos != std::string::npos);
               wildcard_hosts[hostname] = host;
             } else {
