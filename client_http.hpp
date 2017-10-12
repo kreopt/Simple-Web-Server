@@ -36,48 +36,55 @@ namespace SimpleWeb {
   template <class socket_type>
   class Client;
 
+    class AbstractClient {
+    public:
+        class Content : public std::istream {
+            friend class AbstractClient;
+
+        public:
+            std::size_t size() noexcept {
+              return streambuf.size();
+            }
+            /// Convenience function to return std::string. The stream buffer is consumed.
+            std::string string() noexcept {
+              try {
+                std::stringstream ss;
+                ss << rdbuf();
+                return ss.str();
+              }
+              catch(...) {
+                return std::string();
+              }
+            }
+
+        private:
+            asio::streambuf &streambuf;
+            Content(asio::streambuf &streambuf) noexcept : std::istream(&streambuf), streambuf(streambuf) {}
+        };
+
+        class Response {
+
+        // Temporary
+        public:
+
+            asio::streambuf streambuf;
+
+            Response(std::size_t max_response_streambuf_size) noexcept : streambuf(max_response_streambuf_size), content(streambuf) {}
+
+        public:
+            std::string http_version, status_code;
+
+            Content content;
+
+            CaseInsensitiveMultimap header;
+        };
+    };
   template <class socket_type>
-  class ClientBase {
+  class ClientBase: public AbstractClient {
+  protected:
+      using Content = AbstractClient::Content;
+      using Respone = AbstractClient::Response;
   public:
-    class Content : public std::istream {
-      friend class ClientBase<socket_type>;
-
-    public:
-      std::size_t size() noexcept {
-        return streambuf.size();
-      }
-      /// Convenience function to return std::string. The stream buffer is consumed.
-      std::string string() noexcept {
-        try {
-          std::stringstream ss;
-          ss << rdbuf();
-          return ss.str();
-        }
-        catch(...) {
-          return std::string();
-        }
-      }
-
-    private:
-      asio::streambuf &streambuf;
-      Content(asio::streambuf &streambuf) noexcept : std::istream(&streambuf), streambuf(streambuf) {}
-    };
-
-    class Response {
-      friend class ClientBase<socket_type>;
-      friend class Client<socket_type>;
-
-      asio::streambuf streambuf;
-
-      Response(std::size_t max_response_streambuf_size) noexcept : streambuf(max_response_streambuf_size), content(streambuf) {}
-
-    public:
-      std::string http_version, status_code;
-
-      Content content;
-
-      CaseInsensitiveMultimap header;
-    };
 
     class Config {
       friend class ClientBase<socket_type>;
