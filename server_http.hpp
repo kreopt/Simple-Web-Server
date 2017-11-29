@@ -130,19 +130,36 @@ namespace SimpleWeb {
       void write(StatusCode status_code, const std::string &content, const CaseInsensitiveMultimap &header = CaseInsensitiveMultimap()) {
         *this << "HTTP/1.1 " << SimpleWeb::status_code(status_code) << "\r\n";
         write_header(header, content.size());
+          auto transferEncoding = header.find("transfer-encoding");
+          auto chunked = (transferEncoding != header.end())&& case_insensitive_equal(transferEncoding->second, "chunked");
+          if (chunked) {
+              *this << std::hex << content.size() << "\r\n";
+          }
         if(!content.empty())
           *this << content;
+
+          if (chunked) {
+              *this << "\r\n0\r\n\r\n";
+          }
       }
 
       /// Convenience function for writing status line, header fields, and content
       void write(StatusCode status_code, std::istream &content, const CaseInsensitiveMultimap &header = CaseInsensitiveMultimap()) {
         *this << "HTTP/1.1 " << SimpleWeb::status_code(status_code) << "\r\n";
         content.seekg(0, std::ios::end);
-        auto size = content.tellg();
+        size_t size = content.tellg();
         content.seekg(0, std::ios::beg);
         write_header(header, size);
+          auto transferEncoding = header.find("transfer-encoding");
+          auto chunked = (transferEncoding != header.end())&& case_insensitive_equal(transferEncoding->second, "chunked");
+          if (chunked) {
+              *this << std::hex << size << "\r\n";
+          }
         if(size)
           *this << content.rdbuf();
+          if (chunked) {
+              *this << "\r\n0\r\n\r\n";
+          }
       }
 
       /// Convenience function for writing success status line, header fields, and content
