@@ -44,7 +44,7 @@ namespace SimpleWeb {
 #endif
 
 namespace SimpleWeb {
-    using namespace std::string_literals;
+//    using namespace std::string_literals;
   template <class socket_type>
   class Server;
 
@@ -429,9 +429,9 @@ namespace SimpleWeb {
 
       std::shared_ptr<Host> host(const std::string &_hostnames) {
         auto host = std::make_shared<Host>();
-        auto hostnames = split(_hostnames, "\\s+"s);
+        auto hostnames = split(_hostnames, std::string("\\s+"));
         for (const auto& name: hostnames) {
-            auto hostname = split(name, ":"s)[0];
+            auto hostname = split(name, std::string(":"))[0];
             size_t pos = hostname.rfind('*');
             if (pos != std::string::npos) {
                 size_t pos = hostname.rfind('.');
@@ -584,7 +584,7 @@ namespace SimpleWeb {
       std::shared_ptr<Host> host;
 
       auto it = session->request->header.find("Host");
-      auto req_hostname = split(it->second, ":"s)[0];
+      auto req_hostname = split(it->second, std::string(":"))[0];
       std::cout << "host: " << req_hostname<< std::endl;
       if (it == session->request->header.end()) {
         // TODO: get default host
