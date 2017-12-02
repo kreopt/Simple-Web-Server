@@ -259,8 +259,14 @@ namespace SimpleWeb {
       };
 
       std::ostream write_stream(session->request_streambuf.get());
-      if(content.size() > 0)
-        write_stream << "Content-Length: " << content.size() << "\r\n";
+      if(content.size() > 0) {
+        auto header_it = header.find("Content-Length");
+        if(header_it == header.end()) {
+          header_it = header.find("Transfer-Encoding");
+          if(header_it == header.end() || header_it->second != "chunked")
+            write_stream << "Content-Length: " << content.size() << "\r\n";
+        }
+      }
       write_stream << "\r\n"
                    << content;
 
@@ -321,8 +327,14 @@ namespace SimpleWeb {
       auto content_length = content.tellg();
       content.seekg(0, std::ios::beg);
       std::ostream write_stream(session->request_streambuf.get());
-      if(content_length > 0)
-        write_stream << "Content-Length: " << content_length << "\r\n";
+      if(content_length > 0) {
+        auto header_it = header.find("Content-Length");
+        if(header_it == header.end()) {
+          header_it = header.find("Transfer-Encoding");
+          if(header_it == header.end() || header_it->second != "chunked")
+            write_stream << "Content-Length: " << content_length << "\r\n";
+        }
+      }
       write_stream << "\r\n";
       if(content_length > 0)
         write_stream << content.rdbuf();
@@ -499,8 +511,8 @@ namespace SimpleWeb {
               session->callback(session->connection, ec);
           }
           else if((header_it = session->response->header.find("Transfer-Encoding")) != session->response->header.end() && header_it->second == "chunked") {
-            auto tmp_streambuf = std::make_shared<asio::streambuf>();
-            this->read_chunked(session, tmp_streambuf);
+            auto chunks_streambuf = std::make_shared<asio::streambuf>(this->config.max_response_streambuf_size);
+            this->read_chunked_transfer_encoded(session, chunks_streambuf);
           }
           else if(session->response->http_version < "1.1" || ((header_it = session->response->header.find("Session")) != session->response->header.end() && header_it->second == "close")) {
             session->connection->set_timeout();
@@ -547,35 +559,23 @@ namespace SimpleWeb {
       });
     }
 
-    void read_chunked(const std::shared_ptr<Session> &session, const std::shared_ptr<asio::streambuf> &tmp_streambuf) {
-      if(tmp_streambuf->size() >= config.max_response_streambuf_size) {
-        session->callback(session->connection, make_error_code::make_error_code(errc::message_size));
-        return;
-      }
-      // chunked_streambuf is needed as new read buffer with its size adjusted depending on the size of tmp_streambuf
-      auto chunked_streambuf = std::make_shared<asio::streambuf>(config.max_response_streambuf_size - tmp_streambuf->size());
-      // Move excess read data from session->response->streambuf to chunked_streambuf
-      if(session->response->streambuf.size() > 0) {
-        std::ostream chunked_stream(chunked_streambuf.get());
-        chunked_stream << &session->response->streambuf;
-      }
+    void read_chunked_transfer_encoded(const std::shared_ptr<Session> &session, const std::shared_ptr<asio::streambuf> &chunks_streambuf) {
       session->connection->set_timeout();
-      asio::async_read_until(*session->connection->socket, *chunked_streambuf, "\r\n", [this, session, chunked_streambuf, tmp_streambuf](const error_code &ec, std::size_t bytes_transferred) {
+      asio::async_read_until(*session->connection->socket, session->response->streambuf, "\r\n", [this, session, chunks_streambuf](const error_code &ec, size_t bytes_transferred) {
         session->connection->cancel_timeout();
         auto lock = session->connection->handler_runner->continue_lock();
         if(!lock)
           return;
-        if((!ec || ec == asio::error::not_found) && chunked_streambuf->size() == chunked_streambuf->max_size()) {
+        if((!ec || ec == asio::error::not_found) && session->response->streambuf.size() == session->response->streambuf.max_size()) {
           session->callback(session->connection, make_error_code::make_error_code(errc::message_size));
           return;
         }
         if(!ec) {
           std::string line;
-          std::istream chunked_stream(chunked_streambuf.get());
-          getline(chunked_stream, line);
+          getline(session->response->content, line);
           bytes_transferred -= line.size() + 1;
           line.pop_back();
-          unsigned long length;
+          unsigned long length = 0;
           try {
             length = stoul(line, 0, 16);
           }
@@ -584,57 +584,60 @@ namespace SimpleWeb {
             return;
           }
 
-          auto num_additional_bytes = chunked_streambuf->size() - bytes_transferred;
-
-          auto post_process = [this, session, chunked_streambuf, tmp_streambuf, length]() {
-            std::istream chunked_stream(chunked_streambuf.get());
-            std::ostream tmp_stream(tmp_streambuf.get());
-            if(length > 0) {
-              std::unique_ptr<char[]> buffer(new char[length]);
-              chunked_stream.read(buffer.get(), static_cast<std::streamsize>(length));
-              tmp_stream.write(buffer.get(), static_cast<std::streamsize>(length));
-            }
-
-            // Remove "\r\n"
-            chunked_stream.get();
-            chunked_stream.get();
-
-            if(length > 0)
-              this->read_chunked(session, tmp_streambuf);
-            else {
-              if(tmp_streambuf->size() > 0) {
-                std::ostream response_stream(&session->response->streambuf);
-                response_stream << tmp_streambuf.get();
-              }
-              error_code ec;
-              session->callback(session->connection, ec);
-            }
-          };
+          auto num_additional_bytes = session->response->streambuf.size() - bytes_transferred;
 
           if((2 + length) > num_additional_bytes) {
             session->connection->set_timeout();
-            asio::async_read(*session->connection->socket, *chunked_streambuf, asio::transfer_exactly(2 + length - num_additional_bytes), [this, session, chunked_streambuf, post_process](const error_code &ec, std::size_t /*bytes_transferred*/) {
+            asio::async_read(*session->connection->socket, session->response->streambuf, asio::transfer_exactly(2 + length - num_additional_bytes), [this, session, chunks_streambuf, length](const error_code &ec, size_t /*bytes_transferred*/) {
               session->connection->cancel_timeout();
               auto lock = session->connection->handler_runner->continue_lock();
               if(!lock)
                 return;
               if(!ec) {
-                if(chunked_streambuf->size() == chunked_streambuf->max_size()) {
+                if(session->response->streambuf.size() == session->response->streambuf.max_size()) {
                   session->callback(session->connection, make_error_code::make_error_code(errc::message_size));
                   return;
                 }
-                post_process();
+                this->read_chunked_transfer_encoded_chunk(session, chunks_streambuf, length);
               }
               else
                 session->callback(session->connection, ec);
             });
           }
           else
-            post_process();
+            this->read_chunked_transfer_encoded_chunk(session, chunks_streambuf, length);
         }
         else
           session->callback(session->connection, ec);
       });
+    }
+
+    void read_chunked_transfer_encoded_chunk(const std::shared_ptr<Session> &session, const std::shared_ptr<asio::streambuf> &chunks_streambuf, unsigned long length) {
+      std::ostream tmp_stream(chunks_streambuf.get());
+      if(length > 0) {
+        std::unique_ptr<char[]> buffer(new char[length]);
+        session->response->content.read(buffer.get(), static_cast<std::streamsize>(length));
+        tmp_stream.write(buffer.get(), static_cast<std::streamsize>(length));
+        if(chunks_streambuf->size() == chunks_streambuf->max_size()) {
+          session->callback(session->connection, make_error_code::make_error_code(errc::message_size));
+          return;
+        }
+      }
+
+      // Remove "\r\n"
+      session->response->content.get();
+      session->response->content.get();
+
+      if(length > 0)
+        read_chunked_transfer_encoded(session, chunks_streambuf);
+      else {
+        if(chunks_streambuf->size() > 0) {
+          std::ostream ostream(&session->response->streambuf);
+          ostream << chunks_streambuf.get();
+        }
+        error_code ec;
+        session->callback(session->connection, ec);
+      }
     }
   };
 
