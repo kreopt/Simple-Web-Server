@@ -705,8 +705,8 @@ namespace SimpleWeb {
       }
 
       for (const auto& hostname: wildcard_hosts) {
-        std::smatch sm;
-        if (std::regex_match(req_hostname, sm, std::regex(hostname.first))) {
+        regex::smatch sm;
+        if (regex::regex_match(req_hostname, sm, regex::regex(hostname.first))) {
           host = hostname.second;
           break;
         }
