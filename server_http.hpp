@@ -456,7 +456,7 @@ namespace SimpleWeb {
                 } while (pos != std::string::npos);
                 pos = hostname.rfind('*');
               do {
-                hostname.replace(pos, 1, "([^.]+)");
+                hostname.replace(pos, 1, "(.+)");
                 pos = hostname.rfind('*', pos);
               } while (pos != std::string::npos);
               wildcard_hosts[hostname] = host;
