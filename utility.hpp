@@ -7,15 +7,26 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
-#include <regex>
 #include <vector>
+
+#ifdef USE_BOOST_REGEX
+#include <boost/regex.hpp>
+namespace SimpleWeb {
+  namespace regex = boost;
+}
+#else
+#include <regex>
+namespace SimpleWeb {
+    namespace regex = std;
+}
+#endif
 
 namespace SimpleWeb {
 
   template <typename T>
   std::vector<std::basic_string<T>> split(const std::basic_string<T>&_input, const std::basic_string<T> &_regex) {
-    std::basic_regex<T> re(_regex);
-    std::sregex_token_iterator first{_input.begin(), _input.end(), re, -1}, last;
+    regex::basic_regex<T> re(_regex);
+    regex::sregex_token_iterator first{_input.begin(), _input.end(), re, -1}, last;
     return {first, last};
   }
 
